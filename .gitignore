@@ -30,3 +30,7 @@ frontend/bundle-size.json
 
 # Local planning notes
 docs/superpowers/plans/
+
+# Cloudflare local state and secrets
+.wrangler/
+.dev.vars

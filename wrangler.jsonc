@@ -1,0 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "opengym",
+  "main": "cloudflare/worker.js",
+  "compatibility_date": "2026-10-21",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "./frontend/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api", "/api/*"]
+  },
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "opengym",
+    "database_id": "00000000-0000-0000-0000-000000000000",
+    "migrations_dir": "cloudflare/migrations"
+  }],
+  "durable_objects": {
+    "bindings": [{ "name": "OPENGYM", "class_name": "OpenGym" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["OpenGym"] }],
+  "vars": {
+    "ORIGIN": "http://localhost:8787",
+    "RP_ID": "localhost",
+    "FIRST_USER_ADMIN": "0"
+  }
+}

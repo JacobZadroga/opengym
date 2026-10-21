@@ -1,5 +1,19 @@
 {
   "devDependencies": {
-    "js-yaml": "^4.1.0"
+    "js-yaml": "^4.1.0",
+    "miniflare": "^5.20261019.1-beta",
+    "wrangler": "^4.151.3"
+  },
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "cf:install": "npm ci --prefix api --omit=optional && npm ci --prefix frontend",
+    "cf:build": "npm run build --prefix frontend && node cloudflare/stage-media.js",
+    "cf:dev": "wrangler dev",
+    "cf:migrate:local": "wrangler d1 migrations apply DB --local",
+    "cf:migrate:remote": "wrangler d1 migrations apply DB --remote",
+    "cf:deploy": "npm run cf:build && wrangler deploy",
+    "cf:check": "npm run cf:build && wrangler deploy --dry-run",
+    "cf:test": "node --test cloudflare/*.test.js"
   }
 }

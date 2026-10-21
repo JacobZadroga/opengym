@@ -1,3 +1,5 @@
+> **Cloudflare fork:** Deploy the PWA and API on Workers with D1 persistence. See [Cloudflare deployment](docs/CLOUDFLARE.md) for setup, supported features, and limits.
+
 <div align="center">
 
 <img src="assets/banner.png" alt="openGym" width="720">
