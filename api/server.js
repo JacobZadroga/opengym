@@ -13,11 +13,6 @@ import {
   generateAuthenticationOptions, verifyAuthenticationResponse
 } from '@simplewebauthn/server';
 import webpush from 'web-push';
-import * as coachConfig from './coach/config.js';
-import * as coachJobs from './coach/jobs.js';
-import { coachRoutes } from './coach/routes.js';
-import { startCadence } from './coach/cadence.js';
-import { startWarmup } from './coach/warmup.js';
 import { dayReminderPush, nudgePush, restTimerPush, testPush } from './push-messages.js';
 import { verifyError } from './verify-error.js';
 import {
@@ -35,6 +30,24 @@ import { effectiveRoutineId } from './queue.js';
 import { stampPut } from './sync-stamps.js';
 import { atomicWrite as durableWrite } from './durable.js';
 import { excusedOn, nudgeFor, nudgeWindowOpen, toneOf } from './nudge.js';
+
+let currentServer;
+// A Durable Object can be recreated without reloading the module cache. Start each
+// incarnation with fresh account state, challenges, caches, and a new HTTP listener.
+export async function startServer() {
+if (currentServer) currentServer.close();
+// Workers run the existing API behind a serialized Durable Object. Background jobs and
+// process-based Coach providers require the ordinary Node deployment.
+const CLOUDFLARE = process.env.OPENGYM_CLOUDFLARE === '1';
+const { coachConfig, coachJobs, coachRoutes, startCadence, startWarmup } = CLOUDFLARE
+  ? await import('../cloudflare/coach-disabled.js')
+  : await import('./coach/runtime.js');
+const maintenance = [];
+function repeat(fn, ms) {
+  if (!CLOUDFLARE) return setInterval(fn, ms);
+  maintenance.push({ fn, ms, due: Date.now() + ms });
+  return { unref() {} };
+}
 
 const PORT = +(process.env.PORT || 3000);
 const DATA = process.env.DATA_DIR || '/data';
@@ -497,7 +510,7 @@ function nudgeTick(user, S, now) {
   saveDb();
   sendPush(user.id, nudgePush(S.lang, toneOf(S.reminder), routine, now.date));
 }
-setInterval(() => {
+if (!CLOUDFLARE) repeat(() => {
   for (const user of db.users) {
     if (!db.subs.some(s => s.userId === user.id)) continue;
     // One user's state file is one user's problem: a shape this tick cannot read is logged and
@@ -701,7 +714,7 @@ function takeChallenge(cid) {
   if (!c || c.exp < Date.now()) return null;
   return c;
 }
-setInterval(() => { for (const [k, v] of challenges) if (v.exp < Date.now()) challenges.delete(k); }, 60000).unref();
+repeat(() => { for (const [k, v] of challenges) if (v.exp < Date.now()) challenges.delete(k); }, 60000).unref();
 
 // ---------- device pairing (mobile app "connect to my server", no WebAuthn ceremony) ----------
 // A passkey ceremony can't run inside the app's WebView (its origin never matches RP_ID), so the
@@ -716,7 +729,7 @@ function makePairCode() {
   } while (pairings.has(code));
   return code;
 }
-setInterval(() => { for (const [k, v] of pairings) if (v.exp < Date.now()) pairings.delete(k); }, 60000).unref();
+repeat(() => { for (const [k, v] of pairings) if (v.exp < Date.now()) pairings.delete(k); }, 60000).unref();
 
 /* ---------- helpers ---------- */
 function json(res, code, obj, extraHeaders) {
@@ -800,7 +813,7 @@ function livePresence(uid) {
   const { hiddenAt: _away, ...live } = p;   // the mark is bookkeeping; the dashboard gets the row it always did
   return live;
 }
-setInterval(() => { const now = Date.now(); for (const [k, v] of presence) if (!presenceListed(v, now)) presence.delete(k); }, 30000).unref();
+repeat(() => { const now = Date.now(); for (const [k, v] of presence) if (!presenceListed(v, now)) presence.delete(k); }, 30000).unref();
 
 /* ---------- audit log ---------- */
 // Who signed in, who tried and failed, and what an admin changed. One JSON object per line in
@@ -895,7 +908,7 @@ function audit(req, ev, f = {}) {
 }
 if (AUDIT_ON) {
   compactAudit();                                // prune on boot, seed auditSeq/auditCount
-  setInterval(compactAudit, 3600000).unref();    // honour AUDIT_DAYS on an idle instance too
+  repeat(compactAudit, 3600000).unref();    // honour AUDIT_DAYS on an idle instance too
 }
 
 /* ---------- sign-in throttle ---------- */
@@ -943,7 +956,7 @@ const ACCOUNT_FAILS = createBackoff({
   // At most one per profile with a password, so this cannot grow without bound.
   keep: k => k.startsWith('acct:') && hasPassword(db.users.find(u => u.id === k.slice(5)))
 });
-setInterval(() => { AUTH_BURST.sweep(); ADDR_FAILS.sweep(); ACCOUNT_FAILS.sweep(); }, 60000).unref();
+repeat(() => { AUTH_BURST.sweep(); ADDR_FAILS.sweep(); ACCOUNT_FAILS.sweep(); }, 60000).unref();
 
 // Route -> the kind of failure it can count. Every route listed here also spends the burst
 // budget; `null` spends only that.
@@ -1009,7 +1022,7 @@ function strikeAddress(req, kind) {
 // dropped is a row that says the same thing as the ten before it.
 const FAIL_AUDIT = createWindow({ max: 10, windowMs: 60000 });
 const FAIL_AUDIT_ALL = createWindow({ max: 120, windowMs: 60000 });
-setInterval(() => { FAIL_AUDIT.sweep(); FAIL_AUDIT_ALL.sweep(); }, 60000).unref();
+repeat(() => { FAIL_AUDIT.sweep(); FAIL_AUDIT_ALL.sweep(); }, 60000).unref();
 function auditFail(req, ev, f) {
   if (FAIL_AUDIT.take(ev + '|' + limitAddress(req)) || FAIL_AUDIT_ALL.take(ev)) return;
   audit(req, ev, f);
@@ -1770,7 +1783,7 @@ const MEDIA_SWEEPS = createWindow({ max: 10, windowMs: 3600000 });
 // Uid -> until when its throttle has already been recorded, so a client hammering a closed
 // window writes one audit line per window, not one per request.
 const mediaThrottleNoted = new Map();
-setInterval(() => {
+repeat(() => {
   MEDIA_BURST.sweep(); MEDIA_SWEEPS.sweep();
   for (const [k, until] of mediaThrottleNoted) if (until < Date.now()) mediaThrottleNoted.delete(k);
 }, 600000).unref();
@@ -1794,7 +1807,7 @@ function mediaSweepAll() {
   } catch (e) { console.error('media: sweep failed', e); }
 }
 if (MEDIA_ON) {
-  setInterval(mediaSweepAll, 3600000).unref();
+  repeat(mediaSweepAll, 3600000).unref();
   setTimeout(mediaSweepAll, 5 * 60000).unref();
 }
 
@@ -2624,7 +2637,18 @@ function bodyDeadline(req) {
 const APP_ORIGINS = new Set(['https://localhost', 'capacitor://localhost', 'http://localhost']);
 
 const server = http.createServer(async (req, res) => {
+  if (CLOUDFLARE) {
+    const now = Date.now();
+    for (const task of maintenance) {
+      if (now < task.due) continue;
+      task.due = now + task.ms;
+      task.fn();
+    }
+  }
   bodyDeadline(req);
+  if (CLOUDFLARE && /^\/api\/push\//.test(req.url)) {
+    return json(res, 501, { error: 'Server push notifications are unavailable on this deployment' });
+  }
   // Same-origin (the deployed nginx-proxied web app) never triggers CORS, so this only matters
   // for the paired mobile app calling in from its own WebView origin. It carries no cookie
   // (auth is the Authorization header instead), so Allow-Credentials is deliberately never set —
@@ -2707,3 +2731,9 @@ server.headersTimeout = 60000;
 // (the tests spawn the server that way, and so does anyone running two instances on one box) has
 // no other way to learn it.
 server.listen(PORT, () => console.log(`gym-api on :${server.address().port} (rpID=${RP_ID}, origin=${ORIGIN})`));
+
+currentServer = server;
+return server;
+}
+
+if (process.env.OPENGYM_CLOUDFLARE !== '1') await startServer();
